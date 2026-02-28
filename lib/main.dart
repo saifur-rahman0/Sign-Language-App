@@ -7,7 +7,6 @@ import 'package:image_picker/image_picker.dart';
 import 'package:video_player/video_player.dart';
 
 const String baseUrl = 'https://saifur2025-bdslw.hf.space';
-// NEW endpoint:
 const String apiPath = '/predict-landmarks-focus';
 
 void main() => runApp(const MyApp());
@@ -44,9 +43,9 @@ class _SignLanguageAppState extends State<SignLanguageApp> {
   VideoPlayerController? _controller;
 
   Map<String, dynamic>? _prediction;
-  List<dynamic>? _landmarkData;      // (T, F)
-  List<dynamic>? _focusPoints;       // (T, num_points)
-  List<dynamic>? _cam;              // (T,)
+  List<dynamic>? _landmarkData;
+  List<dynamic>? _focusPoints;
+  List<dynamic>? _cam;
 
   bool _isProcessing = false;
   String? _errorMessage;
@@ -123,26 +122,26 @@ class _SignLanguageAppState extends State<SignLanguageApp> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("BdSL Recognizer"), centerTitle: true, elevation: 2),
+      appBar: AppBar(title: const Text("BdSL Recognizer"), centerTitle: true),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _buildSectionLabel("Original Video"),
-            _buildVideoCard(showOverlay: false),
-
-            const SizedBox(height: 20),
-            const Divider(),
-            const SizedBox(height: 20),
-
-            _buildSectionLabel("Landmarks + Focus (Grad-CAM + Saliency)"),
+            _buildSectionLabel("Analysis Preview"),
             _buildVideoCard(showOverlay: true),
+            if (_landmarkData != null) _buildFocusLegend(),
 
-            const SizedBox(height: 24),
-            _buildControls(),
             const SizedBox(height: 24),
             _buildResultArea(),
+            const SizedBox(height: 24),
+
+            _buildSectionLabel("Original Reference"),
+            _buildVideoCard(showOverlay: false),
+
+            const SizedBox(height: 32),
+            _buildControls(),
+            const SizedBox(height: 40),
           ],
         ),
       ),
@@ -153,7 +152,52 @@ class _SignLanguageAppState extends State<SignLanguageApp> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8.0, left: 4.0),
       child: Text(text,
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+            fontWeight: FontWeight.bold,
+            color: Colors.grey[700],
+            letterSpacing: 1.1,
+          )),
+    );
+  }
+
+  Widget _buildFocusLegend() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 12.0, left: 4.0, right: 4.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Text("AI Focus Heatmap:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Container(
+                  height: 8,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(4),
+                    gradient: const LinearGradient(
+                      colors: [Colors.blue, Colors.purple, Colors.red],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text("Low Focus", style: TextStyle(fontSize: 10, color: Colors.grey)),
+              Text("High Focus (Grad-CAM)", style: TextStyle(fontSize: 10, color: Colors.grey)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            "• Boxes/Points: Spatial Focus (Hand importance)\n• Video Border: Temporal Focus (Frame importance)",
+            style: TextStyle(fontSize: 11, fontStyle: FontStyle.italic, color: Colors.black54),
+          ),
+        ],
+      ),
     );
   }
 
@@ -171,38 +215,29 @@ class _SignLanguageAppState extends State<SignLanguageApp> {
               VideoPlayer(_controller!)
             else
               Container(
-                color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.5),
-                child: const Icon(Icons.videocam_off_outlined, size: 50),
+                color: Colors.grey[200],
+                child: const Icon(Icons.videocam_off_outlined, size: 50, color: Colors.grey),
               ),
 
-            if (showOverlay &&
-                _landmarkData != null &&
-                _focusPoints != null &&
-                _cam != null &&
-                isInitialized)
+            if (showOverlay && _landmarkData != null && isInitialized)
               Positioned.fill(
-                child: ClipRect(
-                  child: ValueListenableBuilder(
-                    valueListenable: _controller!,
-                    builder: (context, value, child) {
-                      final totalFrames = _landmarkData!.length;
-                      final durationMs = value.duration.inMilliseconds.toDouble();
-                      final progress = durationMs > 0
-                          ? value.position.inMilliseconds / durationMs
-                          : 0.0;
-                      final frameIdx =
-                      (progress * (totalFrames - 1)).toInt().clamp(0, totalFrames - 1);
+                child: ValueListenableBuilder(
+                  valueListenable: _controller!,
+                  builder: (context, value, child) {
+                    final totalFrames = _landmarkData!.length;
+                    final progress = value.duration.inMilliseconds > 0
+                        ? value.position.inMilliseconds / value.duration.inMilliseconds
+                        : 0.0;
+                    final frameIdx = (progress * (totalFrames - 1)).toInt().clamp(0, totalFrames - 1);
 
-                      final frameLandmarks = _landmarkData![frameIdx];
-                      final frameFocus = _focusPoints![frameIdx];
-                      final camVal = (_cam![frameIdx] as num).toDouble();
-
-                      return CustomPaint(
-                        painter: LandmarkPainter(frameLandmarks,
-                            frameFocus: frameFocus, cam: camVal),
-                      );
-                    },
-                  ),
+                    return CustomPaint(
+                      painter: LandmarkPainter(
+                        _landmarkData![frameIdx],
+                        frameFocus: _focusPoints?[frameIdx],
+                        cam: (_cam?[frameIdx] as num?)?.toDouble() ?? 0.0,
+                      ),
+                    );
+                  },
                 ),
               ),
 
@@ -222,6 +257,17 @@ class _SignLanguageAppState extends State<SignLanguageApp> {
   Widget _buildControls() {
     return Column(
       children: [
+        if (_videoFile != null) ...[
+          FilledButton.icon(
+            onPressed: _isProcessing ? null : _sendToServer,
+            style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(56)),
+            icon: _isProcessing
+                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : const Icon(Icons.psychology),
+            label: Text(_isProcessing ? "Analyzing Gestures..." : "Analyze & Recognize"),
+          ),
+          const SizedBox(height: 12),
+        ],
         Row(
           children: [
             Expanded(
@@ -241,178 +287,144 @@ class _SignLanguageAppState extends State<SignLanguageApp> {
             ),
           ],
         ),
-        if (_videoFile != null) ...[
-          const SizedBox(height: 16),
-          FilledButton.icon(
-            onPressed: _isProcessing ? null : _sendToServer,
-            icon: _isProcessing
-                ? const SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-            )
-                : const Icon(Icons.auto_awesome),
-            label: Text(_isProcessing ? "Processing..." : "Process & Predict"),
-            style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(50)),
-          ),
-        ],
       ],
     );
   }
 
   Widget _buildResultArea() {
     if (_errorMessage != null) {
-      return Text(_errorMessage!, style: const TextStyle(color: Colors.red));
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(color: Colors.red[50], borderRadius: BorderRadius.circular(12)),
+        child: Text(_errorMessage!, style: const TextStyle(color: Colors.red)),
+      );
     }
     if (_prediction == null) return const SizedBox.shrink();
 
-    return Card(
-      color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.4),
-      child: Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          children: [
-            Text(_prediction!['bangla'],
-                style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
-            Text(_prediction!['english'],
-                style: const TextStyle(fontSize: 18, fontStyle: FontStyle.italic)),
-            const SizedBox(height: 10),
-            Text("Confidence: ${_prediction!['confidence']}",
-                style: const TextStyle(fontWeight: FontWeight.bold)),
-          ],
-        ),
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Theme.of(context).colorScheme.primary.withOpacity(0.1)),
+      ),
+      child: Column(
+        children: [
+          const Text("RECOGNIZED SIGN", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900, color: Colors.black54)),
+          const SizedBox(height: 8),
+          Text(_prediction!['bangla'], style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold)),
+          Text(_prediction!['english'].toString().toUpperCase(), style: const TextStyle(fontSize: 16, letterSpacing: 2, color: Colors.black45)),
+          const SizedBox(height: 16),
+          Text("Confidence: ${_prediction!['confidence']}", style: const TextStyle(fontWeight: FontWeight.bold)),
+        ],
       ),
     );
   }
 }
 
 class LandmarkPainter extends CustomPainter {
-  final List<dynamic> framePoints;    // [x,y,z,...]
-  final List<dynamic>? frameFocus;    // [score per point]
-  final double cam;                  // 0..1
+  final List<dynamic> framePoints;
+  final List<dynamic>? frameFocus;
+  final double cam;
 
   LandmarkPainter(this.framePoints, {this.frameFocus, this.cam = 0.0});
 
   Color heatColor(double v) {
     v = v.clamp(0.0, 1.0);
-    final r = (255 * v).toInt();
-    final b = (255 * (1.0 - v)).toInt();
-    return Color.fromARGB(255, r, 60, b); // red -> blue
+    return Color.lerp(Colors.blue, Colors.red, v)!;
   }
 
-  // Compute bounding rect from a list of landmark indices (point indices, not feature indices)
   Rect? _bboxForPoints(Size size, List<int> pointIdxs) {
-    double? minX, minY, maxX, maxY;
+    double minX = 1.0, minY = 1.0, maxX = 0.0, maxY = 0.0;
     bool found = false;
 
-    for (final p in pointIdxs) {
-      final i = p * 3;
+    for (final pIdx in pointIdxs) {
+      final i = pIdx * 3;
       if (i + 1 >= framePoints.length) continue;
 
-      final x = (framePoints[i] as num).toDouble() * size.width;
-      final y = (framePoints[i + 1] as num).toDouble() * size.height;
+      final x = (framePoints[i] as num).toDouble();
+      final y = (framePoints[i + 1] as num).toDouble();
 
-      // skip invalid / padded points
-      if (x <= 0 || y <= 0 || x.isNaN || y.isNaN) continue;
+      if (x <= 0 || y <= 0) continue;
 
       found = true;
-      minX = (minX == null) ? x : (x < minX! ? x : minX);
-      minY = (minY == null) ? y : (y < minY! ? y : minY);
-      maxX = (maxX == null) ? x : (x > maxX! ? x : maxX);
-      maxY = (maxY == null) ? y : (y > maxY! ? y : maxY);
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
     }
 
-    if (!found || minX == null || minY == null || maxX == null || maxY == null) return null;
+    if (!found) return null;
 
-    // Add padding
-    const pad = 12.0;
-    final left = (minX - pad).clamp(0.0, size.width);
-    final top = (minY - pad).clamp(0.0, size.height);
-    final right = (maxX + pad).clamp(0.0, size.width);
-    final bottom = (maxY + pad).clamp(0.0, size.height);
-
-    if (right <= left || bottom <= top) return null;
-    return Rect.fromLTRB(left, top, right, bottom);
-  }
-
-  double _meanFocus(List<int> pointIdxs) {
-    if (frameFocus == null) return 0.0;
-    double sum = 0.0;
-    int cnt = 0;
-    for (final p in pointIdxs) {
-      if (p < frameFocus!.length) {
-        sum += (frameFocus![p] as num).toDouble().clamp(0.0, 1.0);
-        cnt++;
-      }
-    }
-    return cnt == 0 ? 0.0 : (sum / cnt);
+    const pad = 0.02; // Small padding relative to screen
+    return Rect.fromLTRB(
+      (minX - pad) * size.width,
+      (minY - pad) * size.height,
+      (maxX + pad) * size.width,
+      (maxY + pad) * size.height,
+    );
   }
 
   @override
   void paint(Canvas canvas, Size size) {
-    // 1) Temporal CAM border around video
+    // 1) Border (Temporal Focus)
     final borderPaint = Paint()
-      ..color = heatColor(cam).withOpacity(0.85)
+      ..color = heatColor(cam).withOpacity(0.5)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 6 + 10 * cam;
+      ..strokeWidth = 4 + 12 * cam;
     canvas.drawRect(Offset.zero & size, borderPaint);
 
-    // --- IMPORTANT: point index mapping based on your backend order ---
-    // Order in backend landmark vector:
-    // face (len(IMPORTANT_FACE_IDX) points) + left hand(21) + right hand(21) + pose(33)
-    //
-    // Each "point" here means one (x,y,z) triplet.
-    const int facePoints = 52; // IMPORTANT_FACE_IDX length in your backend (should be 52)
-    const int leftHandStart = facePoints;           // point index
-    const int rightHandStart = facePoints + 21;     // point index
-    const int poseStart = facePoints + 21 + 21;     // point index
+    const int faceCount = 52;
+    const int leftHandStart = faceCount;
+    const int rightHandStart = faceCount + 21;
 
-    final leftHandIdxs = List<int>.generate(21, (k) => leftHandStart + k);
-    final rightHandIdxs = List<int>.generate(21, (k) => rightHandStart + k);
-
-    // 2) Draw landmarks as circles (heat + size)
+    // 2) Landmarks (Spatial Focus)
     for (int i = 0, p = 0; i < framePoints.length; i += 3, p++) {
       final x = (framePoints[i] as num).toDouble() * size.width;
       final y = (framePoints[i + 1] as num).toDouble() * size.height;
 
       if (x <= 0 || y <= 0 || x.isNaN || y.isNaN) continue;
 
-      double s = 0.0;
-      if (frameFocus != null && p < frameFocus!.length) {
-        s = (frameFocus![p] as num).toDouble().clamp(0.0, 1.0);
-      }
+      double focus = (frameFocus != null && p < frameFocus!.length)
+          ? (frameFocus![p] as num).toDouble().clamp(0.0, 1.0)
+          : 0.0;
 
       final paint = Paint()
-        ..color = heatColor(s).withOpacity(0.85)
+        ..color = heatColor(focus).withOpacity(0.8)
         ..style = PaintingStyle.fill;
 
-      final radius = 2.0 + 7.0 * s;
-      canvas.drawCircle(Offset(x, y), radius, paint);
+      // Higher focus = bigger dots
+      canvas.drawCircle(Offset(x, y), 2.0 + 10.0 * focus, paint);
     }
 
-    // 3) Draw hand bounding boxes (focus-colored)
-    final leftBox = _bboxForPoints(size, leftHandIdxs);
-    final rightBox = _bboxForPoints(size, rightHandIdxs);
+    // 3) Hand Focus Boxes (Spatial Focus Bounding Boxes)
+    for (var idxs in [
+      List.generate(21, (k) => leftHandStart + k),
+      List.generate(21, (k) => rightHandStart + k)
+    ]) {
+      final box = _bboxForPoints(size, idxs);
+      if (box != null) {
+        double avgFocus = 0.0;
+        int count = 0;
+        for (var i in idxs) {
+          if (frameFocus != null && i < frameFocus!.length) {
+            avgFocus += (frameFocus![i] as num).toDouble();
+            count++;
+          }
+        }
+        final focus = count > 0 ? (avgFocus / count).clamp(0.0, 1.0) : 0.0;
 
-    if (leftBox != null) {
-      final m = _meanFocus(leftHandIdxs);
-      final p = Paint()
-        ..color = heatColor(m).withOpacity(0.95)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 3 + 4 * m;
-      canvas.drawRect(leftBox, p);
-    }
-
-    if (rightBox != null) {
-      final m = _meanFocus(rightHandIdxs);
-      final p = Paint()
-        ..color = heatColor(m).withOpacity(0.95)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 3 + 4 * m;
-      canvas.drawRect(rightBox, p);
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(box, const Radius.circular(8)),
+          Paint()
+            ..color = heatColor(focus).withOpacity(0.9)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2 + 4 * focus,
+        );
+      }
     }
   }
 
   @override
-  bool shouldRepaint(LandmarkPainter oldDelegate) => true;
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }
