@@ -158,7 +158,7 @@ class _SignLanguageAppState extends State<SignLanguageApp> with SingleTickerProv
       title: Column(
         children: [
           Text("BdSL Recognizer", style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 2, color: Theme.of(context).colorScheme.primary)),
-          Text("SIGN LANGUAGE RECOGNITION", style: TextStyle(fontSize: 10, letterSpacing: 1, fontWeight: FontWeight.bold, color: Colors.grey[600])),
+          Text("Bangla SIGN LANGUAGE RECOGNITION", style: TextStyle(fontSize: 10, letterSpacing: 1, fontWeight: FontWeight.bold, color: Colors.grey[600])),
         ],
       ),
     );
