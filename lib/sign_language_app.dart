@@ -1194,7 +1194,7 @@ class _AboutSheet extends StatelessWidget {
                 'Body/Hand Pose Landmarks + Grad-CAM XAI'),
             _aboutRow(Icons.cloud_outlined, 'Backend',
                 'Hugging Face Spaces · FastAPI'),
-            _aboutRow(Icons.person_outlined, 'Researcher', 'Saifur Rahman, Toufika Tasnim'),
+            _aboutRow(Icons.person_outlined, 'Researcher', 'Saifur Rahman and Toufika Tasnim'),
             _aboutRow(Icons.link_rounded, 'Endpoint', baseUrl),
             const SizedBox(height: 20),
             Container(
