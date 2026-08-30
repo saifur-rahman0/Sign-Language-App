@@ -271,23 +271,50 @@ class _SignLanguageAppState extends State<SignLanguageApp>
     setState(() => _history = []);
   }
 
+  // ── Request tracking & auto-pause ──────────────────────────────────────────
+  int _activeRequestId = 0;
+  final bool _autoPauseAtEnd = true;
+
   void _onVideoTick() {
-    if (mounted && _landmarkData != null) {
+    if (!mounted || _controller == null) return;
+    
+    // Auto-pause video at end
+    if (_autoPauseAtEnd &&
+        _controller!.value.isInitialized &&
+        _controller!.value.position >= _controller!.value.duration &&
+        _controller!.value.isPlaying) {
+      _controller!.pause();
+      _controller!.seekTo(Duration.zero);
+      setState(() {});
+      return;
+    }
+
+    if (_landmarkData != null) {
       setState(() {});
     }
   }
 
-  // ── Video picking ────────────────────────────────────────────────────────
+  // ── Video picking (with 3-second limit and request cancellation) ─────────────
   Future<void> _handleVideo(ImageSource source) async {
-    final video = await ImagePicker().pickVideo(source: source);
+    // Invalidate any ongoing in-flight request immediately
+    _activeRequestId++;
+
+    final video = await ImagePicker().pickVideo(
+      source: source,
+      maxDuration: const Duration(seconds: 3), // Auto-stop after 3 seconds
+    );
     if (video == null) return;
+
+    // Reset video state safely
     _controller?.removeListener(_onVideoTick);
     _controller?.dispose();
     _controller = VideoPlayerController.file(File(video.path));
     await _controller!.initialize();
     _controller!.addListener(_onVideoTick);
+
     setState(() {
       _videoFile = video;
+      _isProcessing = false;
       _prediction = null;
       _landmarkData = null;
       _focusPoints = null;
@@ -301,6 +328,9 @@ class _SignLanguageAppState extends State<SignLanguageApp>
   Future<void> _sendToServer() async {
     if (_videoFile == null) return;
     HapticFeedback.mediumImpact();
+
+    final currentRequestId = ++_activeRequestId;
+
     setState(() {
       _isProcessing = true;
       _errorMessage = null;
@@ -361,6 +391,9 @@ class _SignLanguageAppState extends State<SignLanguageApp>
         }
       }
 
+      // If user retook/picked a new video while this request was running, discard it!
+      if (currentRequestId != _activeRequestId || !mounted) return;
+
       final rawBangla = decoded['bangla']?.toString() ?? '';
       final banglaWord = cleanBangla(rawBangla);
       final pred = {
@@ -378,12 +411,12 @@ class _SignLanguageAppState extends State<SignLanguageApp>
         _cam            = decoded['cam'];
         _topPredictions = decoded['top_predictions'];
         _lastLatencyMs  = sw.elapsedMilliseconds;
-        // Show real landmarks in both modes (ML Kit on-device for offline)
         _showLandmarks  = true;
       });
 
+      _controller?.seekTo(Duration.zero);
       _controller?.play();
-      _controller?.setLooping(true);
+      _controller?.setLooping(false); // Let it play once and auto-pause cleanly!
       _controller?.setPlaybackSpeed(_playbackSpeed);
 
       // Auto-speak the recognized Bangla word (single word, no slashes)
@@ -392,6 +425,7 @@ class _SignLanguageAppState extends State<SignLanguageApp>
       // Auto-add to sentence builder (single word, no slashes)
       _addToSentence(banglaWord);
     } catch (e) {
+      if (currentRequestId != _activeRequestId || !mounted) return;
       final msg = e.toString();
       setState(() {
         _errorMessage = msg;
@@ -401,7 +435,9 @@ class _SignLanguageAppState extends State<SignLanguageApp>
         }
       });
     } finally {
-      setState(() => _isProcessing = false);
+      if (currentRequestId == _activeRequestId && mounted) {
+        setState(() => _isProcessing = false);
+      }
     }
   }
 
@@ -1331,6 +1367,42 @@ class _SignLanguageAppState extends State<SignLanguageApp>
   Widget _buildActionPanel() {
     return Column(
       children: [
+        // 3-Step Rhythm guidance card
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          margin: const EdgeInsets.only(bottom: 14),
+          decoration: BoxDecoration(
+            color: NeuColors.background,
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: neuInsetShadows(),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 28,
+                height: 28,
+                decoration: BoxDecoration(
+                  color: NeuColors.background,
+                  shape: BoxShape.circle,
+                  boxShadow: neuRaisedShadows(depth: 0.4),
+                ),
+                child: Icon(Icons.timer_outlined, size: 15, color: NeuColors.accent),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '3-Step Sign Rhythm (3s Max):\nReady (0.5s) → Sign (1.5s) → Rest (0.5s)',
+                  style: GoogleFonts.nunito(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w800,
+                    color: NeuColors.textMuted,
+                    height: 1.3,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
         if (_videoFile != null) ...[
           NeuButton(
             onTap: _isProcessing ? null : _sendToServer,
