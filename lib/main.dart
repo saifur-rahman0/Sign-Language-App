@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'sign_language_app.dart';
+import 'screens/splash_screen.dart';
 import 'theme/neu_theme.dart';
 
 void main() => runApp(const MyApp());
@@ -11,7 +11,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'BdSL Recognizer',
+      title: 'BdSL',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         scaffoldBackgroundColor: NeuColors.background,
@@ -22,7 +22,7 @@ class MyApp extends StatelessWidget {
         textTheme: GoogleFonts.nunitoTextTheme(),
         useMaterial3: true,
       ),
-      home: const SignLanguageApp(),
+      home: const SplashScreen(),
     );
   }
 }

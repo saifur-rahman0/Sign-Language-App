@@ -149,13 +149,21 @@ class AppDrawer extends StatelessWidget {
           Container(
             width: 44,
             height: 44,
+            padding: const EdgeInsets.all(6),
             decoration: BoxDecoration(
               color: NeuColors.background,
               borderRadius: BorderRadius.circular(14),
               boxShadow: neuRaisedShadows(depth: 0.7),
             ),
-            child: Icon(Icons.sign_language_rounded,
-                size: 24, color: NeuColors.accent),
+            child: Image.asset(
+              'assets/images/BdSL_logo.png',
+              fit: BoxFit.contain,
+              errorBuilder: (context, error, stackTrace) => Icon(
+                Icons.sign_language_rounded,
+                size: 24,
+                color: NeuColors.accent,
+              ),
+            ),
           ),
           const SizedBox(width: 14),
           Expanded(

@@ -846,19 +846,24 @@ class _SignLanguageAppState extends State<SignLanguageApp>
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          // Icon in inset circle
+          // Logo in inset circle
           Container(
             width: 104,
             height: 104,
+            padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
               color: NeuColors.background,
               shape: BoxShape.circle,
               boxShadow: neuInsetShadows(),
             ),
-            child: Icon(
-              Icons.sign_language_rounded,
-              size: 48,
-              color: NeuColors.accent.withOpacity(0.65),
+            child: Image.asset(
+              'assets/images/BdSL_logo.png',
+              fit: BoxFit.contain,
+              errorBuilder: (context, error, stackTrace) => Icon(
+                Icons.sign_language_rounded,
+                size: 48,
+                color: NeuColors.accent.withValues(alpha: 0.65),
+              ),
             ),
           ),
           const SizedBox(height: 24),

@@ -8,8 +8,7 @@ class AppStrings {
   static bool isBangla = false;
 
   // ── App bar / general ─────────────────────────────────────────────────────
-  static String get appTitle =>
-      isBangla ? 'বিডিএসএল রিকগনাইজার' : 'BdSL Recognizer';
+  static String get appTitle => 'BdSL';
   static String get subtitle =>
       isBangla
           ? 'বাংলা ইশারা ভাষা · শব্দ স্তর'
