@@ -1,19 +1,27 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 
+import 'l10n/app_strings.dart';
 import 'landmark_painter.dart';
+import 'services/offline_inference_service.dart';
+import 'services/on_device_landmark_service.dart';
 import 'theme/neu_theme.dart';
+import 'widgets/app_drawer.dart';
 import 'widgets/heatmap_legend.dart';
 import 'widgets/history_panel.dart';
 import 'widgets/neu_button.dart';
 import 'widgets/result_card.dart';
+import 'widgets/sentence_builder.dart';
 
 const String baseUrl = 'https://saifur2025-bdslw.hf.space';
 const String apiPath = '/predict-video';
@@ -39,6 +47,15 @@ class SignLanguageApp extends StatefulWidget {
 
 class _SignLanguageAppState extends State<SignLanguageApp>
     with SingleTickerProviderStateMixin {
+  // ── Scaffold key ─────────────────────────────────────────────────────────
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  // ── Offline Mode (Default: True - Offline First) ──────────────────────────
+  bool _isOfflineMode = true;
+
+  // ── Landmark Overlay Toggle (Show/Hide) ──────────────────────────────────
+  bool _showLandmarks = true;
+
   // ── Video ────────────────────────────────────────────────────────────────
   XFile? _videoFile;
   VideoPlayerController? _controller;
@@ -77,6 +94,13 @@ class _SignLanguageAppState extends State<SignLanguageApp>
 
   // ── History ──────────────────────────────────────────────────────────────
   List<Map<String, dynamic>> _history = [];
+  Set<int> _favoriteIndices = {};
+
+  // ── Sentence builder ────────────────────────────────────────────────────
+  final List<String> _sentenceBuffer = [];
+
+  // ── TTS ─────────────────────────────────────────────────────────────────
+  final FlutterTts _tts = FlutterTts();
 
   // ── Animation ────────────────────────────────────────────────────────────
   late AnimationController _pulseCtrl;
@@ -89,16 +113,82 @@ class _SignLanguageAppState extends State<SignLanguageApp>
       vsync: this,
       duration: const Duration(seconds: 2),
     )..repeat(reverse: true);
+    _initTts();
+    OfflineInferenceService.initialize();
     _checkServerHealth();
     _fetchModels();
     _loadHistory();
+    _loadFavorites();
   }
 
   @override
   void dispose() {
     _controller?.dispose();
     _pulseCtrl.dispose();
+    _tts.stop();
     super.dispose();
+  }
+
+  // ── TTS setup ───────────────────────────────────────────────────────────────
+  Future<void> _initTts() async {
+    await _tts.setLanguage('bn-BD');
+    await _tts.setSpeechRate(0.45);
+    await _tts.setVolume(1.0);
+    await _tts.setPitch(1.0);
+  }
+
+  Future<void> _speakBangla(String text) async {
+    if (text.isEmpty) return;
+    await _tts.stop();
+    await _tts.speak(text);
+  }
+
+  // ── Sentence builder ────────────────────────────────────────────────────────
+  void _addToSentence(String word) {
+    if (word.isEmpty) return;
+    setState(() => _sentenceBuffer.add(word));
+  }
+
+  void _shareText(String text) {
+    if (text.isEmpty) return;
+    Share.share(text);
+  }
+
+  // ── Favorites persistence ───────────────────────────────────────────────────
+  Future<void> _loadFavorites() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getStringList('bdslw_favorites') ?? [];
+    setState(() {
+      _favoriteIndices = raw.map((e) => int.tryParse(e) ?? -1).where((e) => e >= 0).toSet();
+    });
+  }
+
+  Future<void> _persistFavorites() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+        'bdslw_favorites', _favoriteIndices.map((e) => e.toString()).toList());
+  }
+
+  void _toggleFavorite(int index) {
+    setState(() {
+      if (_favoriteIndices.contains(index)) {
+        _favoriteIndices.remove(index);
+      } else {
+        _favoriteIndices.add(index);
+      }
+    });
+    _persistFavorites();
+  }
+
+  // ── Language / theme toggles ─────────────────────────────────────────────────
+  void _toggleLanguage() {
+    HapticFeedback.mediumImpact();
+    setState(() => AppStrings.isBangla = !AppStrings.isBangla);
+  }
+
+  void _toggleHighContrast() {
+    HapticFeedback.mediumImpact();
+    setState(() => NeuColors.highContrast = !NeuColors.highContrast);
   }
 
   // ── Server health ────────────────────────────────────────────────────────
@@ -181,13 +271,21 @@ class _SignLanguageAppState extends State<SignLanguageApp>
     setState(() => _history = []);
   }
 
+  void _onVideoTick() {
+    if (mounted && _landmarkData != null) {
+      setState(() {});
+    }
+  }
+
   // ── Video picking ────────────────────────────────────────────────────────
   Future<void> _handleVideo(ImageSource source) async {
     final video = await ImagePicker().pickVideo(source: source);
     if (video == null) return;
+    _controller?.removeListener(_onVideoTick);
     _controller?.dispose();
-    _controller = VideoPlayerController.file(File(video.path))
-      ..initialize().then((_) => setState(() {}));
+    _controller = VideoPlayerController.file(File(video.path));
+    await _controller!.initialize();
+    _controller!.addListener(_onVideoTick);
     setState(() {
       _videoFile = video;
       _prediction = null;
@@ -199,7 +297,7 @@ class _SignLanguageAppState extends State<SignLanguageApp>
     });
   }
 
-  // ── Send to HF Space ─────────────────────────────────────────────────────
+  // ── Run Recognition (Offline First & Online Cloud) ──────────────────────
   Future<void> _sendToServer() async {
     if (_videoFile == null) return;
     HapticFeedback.mediumImpact();
@@ -211,48 +309,88 @@ class _SignLanguageAppState extends State<SignLanguageApp>
 
     try {
       final sw = Stopwatch()..start();
-      final uri = Uri.parse('$baseUrl$apiPath').replace(
-        queryParameters: {'model_type': _selectedModel},
-      );
-      final request = http.MultipartRequest('POST', uri);
-      request.files
-          .add(await http.MultipartFile.fromPath('file', _videoFile!.path));
-      final response = await request.send();
-      sw.stop();
+      Map<String, dynamic> decoded;
 
-      if (response.statusCode == 200) {
-        final body = await response.stream.bytesToString();
-        final decoded = jsonDecode(body) as Map<String, dynamic>;
-
-        if (decoded['error'] != null) {
-          throw Exception(decoded['error']);
+      if (_isOfflineMode) {
+        // ── ON-DEVICE OFFLINE NEURAL NETWORK INFERENCE ─────────────
+        // Runs ONNX Runtime (CPU/GPU/NPU) + RQE-SF normalization on device
+        List<List<double>>? mlkitLandmarks;
+        try {
+          final videoDurationMs = _controller?.value.duration.inMilliseconds;
+          final realLandmarks = await OnDeviceLandmarkService.extractLandmarks(
+            _videoFile!.path,
+            frameCount: 30,
+            videoDurationMs: videoDurationMs,
+          );
+          if (realLandmarks['landmarks'] != null &&
+              (realLandmarks['landmarks'] as List).isNotEmpty) {
+            mlkitLandmarks = (realLandmarks['landmarks'] as List)
+                .map((f) => (f as List).map((v) => (v as num).toDouble()).toList())
+                .toList();
+          }
+        } catch (e) {
+          debugPrint('On-device landmark extraction note: $e');
         }
 
-        // New API returns flat structure (no nested 'prediction' key)
-        final pred = {
-          'bangla':     decoded['bangla'],
-          'english':    decoded['english'],
-          'confidence': decoded['confidence'],
-          'model_used': decoded['model_used'] ?? _selectedModel,
-        };
-        await _addToHistory(pred);
-
-        setState(() {
-          _prediction    = pred;
-          _landmarkData  = decoded['landmarks'];
-          _focusPoints   = decoded['focus_points'];
-          _cam           = decoded['cam'];
-          _topPredictions = decoded['top_predictions'];
-          _serverStatus  = ServerStatus.online;
-          _lastLatencyMs = sw.elapsedMilliseconds;
-        });
-
-        _controller?.play();
-        _controller?.setLooping(true);
-        _controller?.setPlaybackSpeed(_playbackSpeed);
+        decoded = await OfflineInferenceService.predictVideo(
+          File(_videoFile!.path),
+          modelType: _selectedModel,
+          extractedLandmarks: mlkitLandmarks,
+        );
+        sw.stop();
       } else {
-        throw Exception('Server error ${response.statusCode}');
+        // ── ONLINE CLOUD API ──────────────────────────────────────
+        final uri = Uri.parse('$baseUrl$apiPath').replace(
+          queryParameters: {'model_type': _selectedModel},
+        );
+        final request = http.MultipartRequest('POST', uri);
+        request.files
+            .add(await http.MultipartFile.fromPath('file', _videoFile!.path));
+        final response = await request.send();
+        sw.stop();
+
+        if (response.statusCode == 200) {
+          final body = await response.stream.bytesToString();
+          decoded = jsonDecode(body) as Map<String, dynamic>;
+          if (decoded['error'] != null) {
+            throw Exception(decoded['error']);
+          }
+          _serverStatus = ServerStatus.online;
+        } else {
+          throw Exception('Server error ${response.statusCode}');
+        }
       }
+
+      final rawBangla = decoded['bangla']?.toString() ?? '';
+      final banglaWord = cleanBangla(rawBangla);
+      final pred = {
+        'bangla':     banglaWord,
+        'english':    decoded['english'],
+        'confidence': decoded['confidence'],
+        'model_used': decoded['model_used'] ?? _selectedModel,
+      };
+      await _addToHistory(pred);
+
+      setState(() {
+        _prediction     = pred;
+        _landmarkData   = decoded['landmarks'];
+        _focusPoints    = decoded['focus_points'];
+        _cam            = decoded['cam'];
+        _topPredictions = decoded['top_predictions'];
+        _lastLatencyMs  = sw.elapsedMilliseconds;
+        // Show real landmarks in both modes (ML Kit on-device for offline)
+        _showLandmarks  = true;
+      });
+
+      _controller?.play();
+      _controller?.setLooping(true);
+      _controller?.setPlaybackSpeed(_playbackSpeed);
+
+      // Auto-speak the recognized Bangla word (single word, no slashes)
+      _speakBangla(banglaWord);
+
+      // Auto-add to sentence builder (single word, no slashes)
+      _addToSentence(banglaWord);
     } catch (e) {
       final msg = e.toString();
       setState(() {
@@ -275,6 +413,8 @@ class _SignLanguageAppState extends State<SignLanguageApp>
       backgroundColor: Colors.transparent,
       builder: (_) => HistoryPanel(
         history: _history,
+        favoriteIndices: _favoriteIndices,
+        onToggleFavorite: _toggleFavorite,
         onClear: () {
           _clearHistory();
           Navigator.pop(context);
@@ -353,6 +493,23 @@ class _SignLanguageAppState extends State<SignLanguageApp>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      key: _scaffoldKey,
+      drawer: AppDrawer(
+        isOfflineMode: _isOfflineMode,
+        onToggleOfflineMode: (val) => setState(() => _isOfflineMode = val),
+        selectedModel: _selectedModel,
+        availableModels: _availableModels,
+        onSelectModel: (m) => setState(() => _selectedModel = m),
+        onOpenHistory: _openHistory,
+        onOpenAbout: _openAbout,
+        onShowGradCam: _showGradCamDialog,
+        onToggleLanguage: _toggleLanguage,
+        onToggleTheme: _toggleHighContrast,
+        historyCount: _history.length,
+        favoritesCount: _favoriteIndices.length,
+        serverStatus: _serverStatus,
+        latencyMs: _lastLatencyMs,
+      ),
       backgroundColor: NeuColors.background,
       body: SafeArea(
         child: CustomScrollView(
@@ -368,7 +525,7 @@ class _SignLanguageAppState extends State<SignLanguageApp>
                   else ...[
                     const SizedBox(height: 8),
                     _buildSectionHeader(
-                      'Analysis Engine',
+                      AppStrings.analysisEngine,
                       isLive: _landmarkData != null,
                       onInfoTap: _showGradCamDialog,
                     ),
@@ -383,11 +540,33 @@ class _SignLanguageAppState extends State<SignLanguageApp>
                       ResultCard(
                         prediction: _prediction!,
                         topPredictions: _topPredictions,
+                        allFramesFocus: _focusPoints,
+                        onSpeak: () => _speakBangla(
+                            _prediction!['bangla']?.toString() ?? ''),
+                        onShare: () {
+                          final b = _prediction!['bangla'] ?? '';
+                          final e = _prediction!['english'] ?? '';
+                          final c = _prediction!['confidence'] ?? '';
+                          _shareText('$b — $e ($c)');
+                        },
                       ),
                       const SizedBox(height: 20),
                     ],
                   ],
-                  const SizedBox(height: 24),
+                  // Sentence builder
+                  if (_sentenceBuffer.isNotEmpty || _prediction != null) ...[
+                    SentenceBuilder(
+                      words: _sentenceBuffer,
+                      onClear: () => setState(() => _sentenceBuffer.clear()),
+                      onSpeakAll: () =>
+                          _speakBangla(_sentenceBuffer.join(' ')),
+                      onShare: () =>
+                          _shareText(_sentenceBuffer.join(' ')),
+                      onRemoveWord: (i) => setState(
+                          () => _sentenceBuffer.removeAt(i)),
+                    ),
+                    const SizedBox(height: 24),
+                  ],
                   _buildModelSelector(),
                   const SizedBox(height: 32),
                   _buildActionPanel(),
@@ -413,22 +592,27 @@ class _SignLanguageAppState extends State<SignLanguageApp>
       backgroundColor: NeuColors.background,
       elevation: 0,
       centerTitle: true,
+      leading: _buildAppBarIcon(
+        Icons.menu_rounded,
+        () => _scaffoldKey.currentState?.openDrawer(),
+        tooltip: AppStrings.menu,
+      ),
       title: Column(
         children: [
           Text(
-            'BdSL Recognizer',
+            AppStrings.appTitle,
             style: GoogleFonts.nunito(
               fontWeight: FontWeight.w900,
-              fontSize: 18,
-              letterSpacing: 1.5,
+              fontSize: 17,
+              letterSpacing: 1.2,
               color: NeuColors.text,
             ),
           ),
           Text(
-            'BANGLA SIGN LANGUAGE · WORD LEVEL',
+            AppStrings.subtitle,
             style: GoogleFonts.nunito(
-              fontSize: 9,
-              letterSpacing: 1.2,
+              fontSize: 8.5,
+              letterSpacing: 1.0,
               fontWeight: FontWeight.w700,
               color: NeuColors.textMuted,
             ),
@@ -436,11 +620,50 @@ class _SignLanguageAppState extends State<SignLanguageApp>
         ],
       ),
       actions: [
-        _buildServerDot(),
-        _buildAppBarIcon(Icons.history_rounded, _openHistory),
-        _buildAppBarIcon(Icons.info_outline_rounded, _openAbout),
+        _buildModeToggleChip(),
+        if (!_isOfflineMode) _buildServerDot(),
+        _buildAppBarIcon(Icons.history_rounded, _openHistory, tooltip: AppStrings.recognitionHistory),
         const SizedBox(width: 8),
       ],
+    );
+  }
+
+  Widget _buildModeToggleChip() {
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.mediumImpact();
+        setState(() => _isOfflineMode = !_isOfflineMode);
+      },
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+        decoration: BoxDecoration(
+          color: _isOfflineMode ? NeuColors.success : NeuColors.accent,
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: neuRaisedShadows(depth: 0.5),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              _isOfflineMode ? Icons.phone_android_rounded : Icons.cloud_done_rounded,
+              size: 13,
+              color: Colors.white,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              _isOfflineMode
+                  ? (AppStrings.isBangla ? 'অফলাইন' : 'Offline')
+                  : (AppStrings.isBangla ? 'অনলাইন' : 'Online'),
+              style: GoogleFonts.nunito(
+                fontSize: 10.5,
+                fontWeight: FontWeight.w900,
+                color: Colors.white,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -488,8 +711,8 @@ class _SignLanguageAppState extends State<SignLanguageApp>
     );
   }
 
-  Widget _buildAppBarIcon(IconData icon, VoidCallback onTap) {
-    return GestureDetector(
+  Widget _buildAppBarIcon(IconData icon, VoidCallback onTap, {String? tooltip}) {
+    final child = GestureDetector(
       onTap: onTap,
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
@@ -502,6 +725,10 @@ class _SignLanguageAppState extends State<SignLanguageApp>
         child: Icon(icon, size: 20, color: NeuColors.textMuted),
       ),
     );
+    if (tooltip != null) {
+      return Tooltip(message: tooltip, child: child);
+    }
+    return child;
   }
 
   // ── Section header ────────────────────────────────────────────────────────
@@ -555,7 +782,7 @@ class _SignLanguageAppState extends State<SignLanguageApp>
                       radius: 3, backgroundColor: NeuColors.error),
                   const SizedBox(width: 6),
                   Text(
-                    'ACTIVE',
+                    AppStrings.active,
                     style: GoogleFonts.nunito(
                       color: NeuColors.error,
                       fontSize: 10,
@@ -600,7 +827,7 @@ class _SignLanguageAppState extends State<SignLanguageApp>
           ),
           const SizedBox(height: 24),
           Text(
-            'Ready for Analysis',
+            AppStrings.readyForAnalysis,
             style: GoogleFonts.nunito(
               fontSize: 22,
               fontWeight: FontWeight.w800,
@@ -609,7 +836,7 @@ class _SignLanguageAppState extends State<SignLanguageApp>
           ),
           const SizedBox(height: 8),
           Text(
-            'Select a video to begin sign recognition',
+            AppStrings.selectVideo,
             style: GoogleFonts.nunito(
                 fontSize: 14, color: NeuColors.textMuted),
           ),
@@ -654,6 +881,71 @@ class _SignLanguageAppState extends State<SignLanguageApp>
     );
   }
 
+  // ── Landmark Interpolators for 100% video-sync precision ────────────────
+  List<dynamic> _interpolateLandmarkFrame(double progress) {
+    if (_landmarkData == null || _landmarkData!.isEmpty) return [];
+    final total = _landmarkData!.length;
+    if (total == 1) return _landmarkData!.first as List<dynamic>;
+
+    final exact = progress * (total - 1);
+    final f0 = exact.floor().clamp(0, total - 1);
+    final f1 = exact.ceil().clamp(0, total - 1);
+    final alpha = exact - f0;
+
+    final frame0 = _landmarkData![f0] as List<dynamic>;
+    if (f0 == f1 || alpha <= 0.001) return frame0;
+    final frame1 = _landmarkData![f1] as List<dynamic>;
+
+    final len = min(frame0.length, frame1.length);
+    final out = List<double>.filled(len, 0.0);
+    for (int i = 0; i < len; i++) {
+      final p0 = (frame0[i] as num).toDouble();
+      final p1 = (frame1[i] as num).toDouble();
+      out[i] = p0 + (p1 - p0) * alpha;
+    }
+    return out;
+  }
+
+  List<dynamic>? _interpolateFocusFrame(double progress) {
+    if (_focusPoints == null || _focusPoints!.isEmpty) return null;
+    final total = _focusPoints!.length;
+    if (total == 1) return _focusPoints!.first as List<dynamic>;
+
+    final exact = progress * (total - 1);
+    final f0 = exact.floor().clamp(0, total - 1);
+    final f1 = exact.ceil().clamp(0, total - 1);
+    final alpha = exact - f0;
+
+    final frame0 = _focusPoints![f0] as List<dynamic>;
+    if (f0 == f1 || alpha <= 0.001) return frame0;
+    final frame1 = _focusPoints![f1] as List<dynamic>;
+
+    final len = min(frame0.length, frame1.length);
+    final out = List<double>.filled(len, 0.0);
+    for (int i = 0; i < len; i++) {
+      final p0 = (frame0[i] as num).toDouble();
+      final p1 = (frame1[i] as num).toDouble();
+      out[i] = p0 + (p1 - p0) * alpha;
+    }
+    return out;
+  }
+
+  double _interpolateCamValue(double progress) {
+    if (_cam == null || _cam!.isEmpty) return 0.0;
+    final total = _cam!.length;
+    if (total == 1) return (_cam!.first as num).toDouble();
+
+    final exact = progress * (total - 1);
+    final f0 = exact.floor().clamp(0, total - 1);
+    final f1 = exact.ceil().clamp(0, total - 1);
+    final alpha = exact - f0;
+
+    final c0 = (_cam![f0] as num).toDouble();
+    if (f0 == f1 || alpha <= 0.001) return c0;
+    final c1 = (_cam![f1] as num).toDouble();
+    return c0 + (c1 - c0) * alpha;
+  }
+
   // ── Video display ─────────────────────────────────────────────────────────
   Widget _buildVideoDisplay({required bool showOverlay, bool mini = false}) {
     final isInit = _controller?.value.isInitialized ?? false;
@@ -682,53 +974,103 @@ class _SignLanguageAppState extends State<SignLanguageApp>
                 ),
               ),
             if (showOverlay && _landmarkData != null && isInit) ...[
-              Positioned.fill(
-                child: ValueListenableBuilder(
-                  valueListenable: _controller!,
-                  builder: (ctx, value, _) {
-                    final frameIdx = ((value.position.inMilliseconds /
-                                (value.duration.inMilliseconds + 1)) *
-                            (_landmarkData!.length - 1))
-                        .toInt()
-                        .clamp(0, _landmarkData!.length - 1);
-                    return CustomPaint(
-                      painter: LandmarkPainter(
-                        _landmarkData![frameIdx],
-                        frameFocus: _focusPoints?[frameIdx],
-                        cam: (_cam?[frameIdx] as num?)?.toDouble() ?? 0.0,
-                      ),
-                    );
-                  },
+              if (_showLandmarks)
+                Positioned.fill(
+                  child: Builder(
+                    builder: (ctx) {
+                      final dur = _controller!.value.duration.inMilliseconds;
+                      final pos = _controller!.value.position.inMilliseconds;
+                      final progress = dur > 0 ? (pos / dur).clamp(0.0, 1.0) : 0.0;
+
+                      final pts = _interpolateLandmarkFrame(progress);
+                      final focus = _interpolateFocusFrame(progress);
+                      final cam = _interpolateCamValue(progress);
+
+                      return CustomPaint(
+                        painter: LandmarkPainter(
+                          pts,
+                          frameFocus: focus,
+                          cam: cam,
+                        ),
+                      );
+                    },
+                  ),
                 ),
-              ),
               Positioned(
                 top: 10,
                 right: 10,
-                child: GestureDetector(
-                  onTap: _showGradCamDialog,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: NeuColors.background.withOpacity(0.85),
-                      borderRadius: BorderRadius.circular(12),
-                      boxShadow: neuRaisedShadows(depth: 0.5),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.info_outline_rounded, size: 13, color: NeuColors.accent),
-                        const SizedBox(width: 4),
-                        Text(
-                          'Grad-CAM Info',
-                          style: GoogleFonts.nunito(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w800,
-                            color: NeuColors.text,
-                          ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // ── Landmark Show/Hide Toggle ──
+                    GestureDetector(
+                      onTap: () {
+                        HapticFeedback.mediumImpact();
+                        setState(() => _showLandmarks = !_showLandmarks);
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: _showLandmarks
+                              ? NeuColors.accent
+                              : NeuColors.background.withValues(alpha: 0.9),
+                          borderRadius: BorderRadius.circular(12),
+                          boxShadow: neuRaisedShadows(depth: 0.5),
                         ),
-                      ],
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              _showLandmarks
+                                  ? Icons.visibility_rounded
+                                  : Icons.visibility_off_rounded,
+                              size: 13,
+                              color: _showLandmarks ? Colors.white : NeuColors.textMuted,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              _showLandmarks
+                                  ? (_isOfflineMode ? 'ML Kit' : 'Landmarks')
+                                  : 'Hidden',
+                              style: GoogleFonts.nunito(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w800,
+                                color: _showLandmarks ? Colors.white : NeuColors.textMuted,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
-                  ),
+                    const SizedBox(width: 6),
+                    // ── Grad-CAM Info ──
+                    GestureDetector(
+                      onTap: _showGradCamDialog,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: NeuColors.background.withValues(alpha: 0.9),
+                          borderRadius: BorderRadius.circular(12),
+                          boxShadow: neuRaisedShadows(depth: 0.5),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.info_outline_rounded, size: 13, color: NeuColors.accent),
+                            const SizedBox(width: 4),
+                            Text(
+                              'Info',
+                              style: GoogleFonts.nunito(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w800,
+                                color: NeuColors.text,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -859,64 +1201,52 @@ class _SignLanguageAppState extends State<SignLanguageApp>
     );
   }
 
-  // ── Model selector ────────────────────────────────────────────────────────
+  // ── Model selector (Dropdown) ──────────────────────────────────────────
   Widget _buildModelSelector() {
-    // Split into two architecture groups
-    final transformer = _availableModels
-        .where((m) => m.startsWith('transformer'))
-        .toList();
-    final cnn = _availableModels
-        .where((m) => m.startsWith('cnn'))
-        .toList();
-
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
       decoration: BoxDecoration(
         color: NeuColors.background,
         borderRadius: BorderRadius.circular(22),
-        boxShadow: neuRaisedShadows(depth: 0.9),
+        boxShadow: neuRaisedShadows(depth: 0.8),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Header ────────────────────────────────────────────────
           Row(
             children: [
               Container(
-                width: 36,
-                height: 36,
+                width: 34,
+                height: 34,
                 decoration: BoxDecoration(
                   color: NeuColors.background,
                   borderRadius: BorderRadius.circular(10),
-                  boxShadow: neuRaisedShadows(depth: 0.6),
+                  boxShadow: neuRaisedShadows(depth: 0.5),
                 ),
-                child: Icon(Icons.tune_rounded,
-                    size: 18, color: NeuColors.accent),
+                child: Icon(Icons.tune_rounded, size: 17, color: NeuColors.accent),
               ),
-              const SizedBox(width: 12),
+              const SizedBox(width: 10),
               Text(
-                'MODEL SELECTION',
+                AppStrings.modelSelection.toUpperCase(),
                 style: GoogleFonts.nunito(
-                  fontSize: 12,
+                  fontSize: 10.5,
                   fontWeight: FontWeight.w900,
-                  color: NeuColors.text,
+                  color: NeuColors.textMuted,
                   letterSpacing: 1.2,
                 ),
               ),
               const Spacer(),
-              // Currently selected model pill
               Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
                 decoration: BoxDecoration(
                   color: NeuColors.background,
-                  borderRadius: BorderRadius.circular(20),
+                  borderRadius: BorderRadius.circular(12),
                   boxShadow: neuInsetShadows(),
                 ),
                 child: Text(
                   _selectedModel.startsWith('transformer')
-                      ? 'Transformer'
-                      : 'CNN-BiLSTM',
+                      ? AppStrings.transformer
+                      : AppStrings.cnnBiLSTM,
                   style: GoogleFonts.nunito(
                     fontSize: 10,
                     fontWeight: FontWeight.w800,
@@ -926,79 +1256,74 @@ class _SignLanguageAppState extends State<SignLanguageApp>
               ),
             ],
           ),
-          const SizedBox(height: 18),
-
-          // ── Transformer group ─────────────────────────────────────
-          if (transformer.isNotEmpty) ...[
-            _archLabel('Transformer', Icons.auto_awesome_rounded),
-            const SizedBox(height: 10),
-            _modelChipRow(transformer),
-            const SizedBox(height: 14),
-          ],
-
-          // ── CNN-BiLSTM group ──────────────────────────────────────
-          if (cnn.isNotEmpty) ...[
-            _archLabel('CNN-BiLSTM', Icons.model_training_rounded),
-            const SizedBox(height: 10),
-            _modelChipRow(cnn),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _archLabel(String label, IconData icon) {
-    return Row(
-      children: [
-        Icon(icon, size: 13, color: NeuColors.textMuted),
-        const SizedBox(width: 6),
-        Text(
-          label.toUpperCase(),
-          style: GoogleFonts.nunito(
-            fontSize: 10,
-            fontWeight: FontWeight.w900,
-            color: NeuColors.textMuted,
-            letterSpacing: 1.2,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _modelChipRow(List<String> models) {
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: models.map((m) {
-        final selected = _selectedModel == m;
-        final label = kModelLabels[m] ?? m;
-        return GestureDetector(
-          onTap: () {
-            HapticFeedback.selectionClick();
-            setState(() => _selectedModel = m);
-          },
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 160),
-            padding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
             decoration: BoxDecoration(
-              color: selected ? NeuColors.accent : NeuColors.background,
-              borderRadius: BorderRadius.circular(14),
-              boxShadow: selected
-                  ? neuInsetShadows()
-                  : neuRaisedShadows(depth: 0.65),
+              color: NeuColors.background,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: neuInsetShadows(),
             ),
-            child: Text(
-              label,
-              style: GoogleFonts.nunito(
-                fontSize: 12,
-                fontWeight: FontWeight.w800,
-                color: selected ? Colors.white : NeuColors.textMuted,
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: _availableModels.contains(_selectedModel)
+                    ? _selectedModel
+                    : _availableModels.first,
+                isExpanded: true,
+                dropdownColor: NeuColors.background,
+                borderRadius: BorderRadius.circular(18),
+                icon: Icon(Icons.keyboard_arrow_down_rounded, color: NeuColors.accent),
+                items: _availableModels.map((m) {
+                  final isTransformer = m.startsWith('transformer');
+                  final label = kModelLabels[m] ?? m;
+                  final arch = isTransformer ? 'Transformer' : 'CNN-BiLSTM';
+                  return DropdownMenuItem<String>(
+                    value: m,
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: (isTransformer ? NeuColors.accent : NeuColors.warning)
+                                .withOpacity(0.18),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            isTransformer ? 'TR' : 'CNN',
+                            style: GoogleFonts.nunito(
+                              fontSize: 9.5,
+                              fontWeight: FontWeight.w900,
+                              color: isTransformer ? NeuColors.accent : NeuColors.warning,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            '$arch · $label',
+                            overflow: TextOverflow.ellipsis,
+                            style: GoogleFonts.nunito(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w800,
+                              color: NeuColors.text,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+                onChanged: (newModel) {
+                  if (newModel != null) {
+                    HapticFeedback.selectionClick();
+                    setState(() => _selectedModel = newModel);
+                  }
+                },
               ),
             ),
           ),
-        );
-      }).toList(),
+        ],
+      ),
     );
   }
 
@@ -1023,7 +1348,7 @@ class _SignLanguageAppState extends State<SignLanguageApp>
                       ),
                       const SizedBox(width: 12),
                       Text(
-                        'ANALYZING…',
+                        AppStrings.analyzing,
                         style: GoogleFonts.nunito(
                           fontWeight: FontWeight.w900,
                           letterSpacing: 1.5,
@@ -1038,7 +1363,7 @@ class _SignLanguageAppState extends State<SignLanguageApp>
                       Icon(Icons.psychology_rounded, color: NeuColors.accent),
                       const SizedBox(width: 12),
                       Text(
-                        'RUN RECOGNITION',
+                        AppStrings.runRecognition,
                         style: GoogleFonts.nunito(
                           fontWeight: FontWeight.w900,
                           letterSpacing: 1.5,
@@ -1062,7 +1387,7 @@ class _SignLanguageAppState extends State<SignLanguageApp>
                         color: NeuColors.accent, size: 20),
                     const SizedBox(width: 8),
                     Text(
-                      'GALLERY',
+                      AppStrings.gallery,
                       style: GoogleFonts.nunito(
                         fontWeight: FontWeight.w800,
                         color: NeuColors.text,
@@ -1084,7 +1409,7 @@ class _SignLanguageAppState extends State<SignLanguageApp>
                         color: NeuColors.accent, size: 20),
                     const SizedBox(width: 8),
                     Text(
-                      'CAMERA',
+                      AppStrings.camera,
                       style: GoogleFonts.nunito(
                         fontWeight: FontWeight.w800,
                         color: NeuColors.text,
@@ -1178,7 +1503,7 @@ class _AboutSheet extends StatelessWidget {
             ),
             const SizedBox(height: 24),
             Text(
-              'About BdSL Recognizer',
+              AppStrings.aboutTitle,
               style: GoogleFonts.nunito(
                 fontSize: 22,
                 fontWeight: FontWeight.w900,
@@ -1186,16 +1511,16 @@ class _AboutSheet extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 20),
-            _aboutRow(Icons.dataset_outlined, 'Dataset',
+            _aboutRow(Icons.dataset_outlined, AppStrings.dataset,
                 'BdSLW401 – Bangladesh Sign Language Word Dataset'),
-            _aboutRow(Icons.category_outlined, 'Task',
+            _aboutRow(Icons.category_outlined, AppStrings.task,
                 'Word-Level Sign Recognition (Video Input)'),
-            _aboutRow(Icons.model_training_outlined, 'Approach',
+            _aboutRow(Icons.model_training_outlined, AppStrings.approach,
                 'Body/Hand Pose Landmarks + Grad-CAM XAI'),
-            _aboutRow(Icons.cloud_outlined, 'Backend',
+            _aboutRow(Icons.cloud_outlined, AppStrings.backend,
                 'Hugging Face Spaces · FastAPI'),
-            _aboutRow(Icons.person_outlined, 'Researcher', 'Saifur Rahman and Toufika Tasnim'),
-            _aboutRow(Icons.link_rounded, 'Endpoint', baseUrl),
+            _aboutRow(Icons.person_outlined, AppStrings.researcher, 'Saifur Rahman and Toufika Tasnim'),
+            _aboutRow(Icons.link_rounded, AppStrings.endpoint, baseUrl),
             const SizedBox(height: 20),
             Container(
               padding: const EdgeInsets.all(16),

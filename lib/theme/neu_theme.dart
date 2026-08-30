@@ -7,14 +7,20 @@ enum ServerStatus { checking, online, offline }
 class NeuColors {
   NeuColors._();
 
-  /// The main background – soft cool grey
-  static const Color background = Color(0xFFE0E5EC);
+  /// High-contrast toggle. When `true`, switches to a dark neumorphic palette.
+  static bool highContrast = false;
+
+  /// The main background – soft cool grey / dark slate
+  static Color get background =>
+      highContrast ? const Color(0xFF1A1A2E) : const Color(0xFFE0E5EC);
 
   /// Light (top-left) shadow for raised surfaces
-  static const Color lightShadow = Color(0xFFFFFFFF);
+  static Color get lightShadow =>
+      highContrast ? const Color(0xFF2D2D44) : const Color(0xFFFFFFFF);
 
   /// Dark (bottom-right) shadow for raised surfaces
-  static const Color darkShadow = Color(0xFFA3B1C6);
+  static Color get darkShadow =>
+      highContrast ? const Color(0xFF0D0D1A) : const Color(0xFFA3B1C6);
 
   /// Primary accent – indigo-violet
   static const Color accent = Color(0xFF6C63FF);
@@ -23,10 +29,12 @@ class NeuColors {
   static const Color accentLight = Color(0xFF9B8FFF);
 
   /// Primary text
-  static const Color text = Color(0xFF2D3142);
+  static Color get text =>
+      highContrast ? const Color(0xFFF0F0F5) : const Color(0xFF2D3142);
 
   /// Secondary / muted text
-  static const Color textMuted = Color(0xFF7B8096);
+  static Color get textMuted =>
+      highContrast ? const Color(0xFF8888AA) : const Color(0xFF7B8096);
 
   /// Semantic: success / high confidence
   static const Color success = Color(0xFF4CAF7D);
@@ -51,7 +59,7 @@ List<BoxShadow> neuRaisedShadows({double depth = 1.0}) {
       blurRadius: 12 * d,
     ),
     BoxShadow(
-      color: NeuColors.lightShadow.withOpacity(0.9),
+      color: NeuColors.lightShadow.withOpacity(NeuColors.highContrast ? 0.3 : 0.9),
       offset: Offset(-5 * d, -5 * d),
       blurRadius: 10 * d,
     ),
@@ -66,7 +74,7 @@ List<BoxShadow> neuInsetShadows() => [
         blurRadius: 6,
       ),
       BoxShadow(
-        color: NeuColors.lightShadow,
+        color: NeuColors.lightShadow.withOpacity(NeuColors.highContrast ? 0.2 : 1.0),
         offset: const Offset(-3, -3),
         blurRadius: 6,
       ),
